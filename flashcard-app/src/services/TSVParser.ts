@@ -109,11 +109,27 @@ export class TSVParser {
     }
 
     // Extract and optionally trim columns
-    const word = options.trimWhitespace ? columns[0]?.trim() : columns[0];
-    const translation = options.trimWhitespace ? columns[1]?.trim() : columns[1];
-    const wordPronunciation = options.trimWhitespace ? columns[2]?.trim() : columns[2];
-    const translationPronunciation = options.trimWhitespace ? columns[3]?.trim() : columns[3];
-    const memo = options.trimWhitespace ? columns[4]?.trim() : columns[4];
+    // Support both formats:
+    // 2 columns: word, translation (legacy format)
+    // 3+ columns: word, wordPronunciation, translation, translationPronunciation, memo (new format)
+    let word: string, wordPronunciation: string | undefined, translation: string;
+    let translationPronunciation: string | undefined, memo: string | undefined;
+
+    if (columns.length === 2) {
+      // Legacy format: word, translation
+      word = options.trimWhitespace ? columns[0]?.trim() : columns[0];
+      translation = options.trimWhitespace ? columns[1]?.trim() : columns[1];
+      wordPronunciation = undefined;
+      translationPronunciation = undefined;
+      memo = undefined;
+    } else {
+      // New format: word, wordPronunciation, translation, translationPronunciation, memo
+      word = options.trimWhitespace ? columns[0]?.trim() : columns[0];
+      wordPronunciation = options.trimWhitespace ? columns[1]?.trim() : columns[1];
+      translation = options.trimWhitespace ? columns[2]?.trim() : columns[2];
+      translationPronunciation = options.trimWhitespace ? columns[3]?.trim() : columns[3];
+      memo = options.trimWhitespace ? columns[4]?.trim() : columns[4];
+    }
 
 
 
@@ -121,13 +137,14 @@ export class TSVParser {
     if (options.validateRequired) {
       if (!word || word.trim() === '') {
         throw new AppError(
-          `Line ${lineNumber}: Word column is required and cannot be empty`,
+          `Line ${lineNumber}: Word column (column 1) is required and cannot be empty`,
           ERROR_CODES.VALIDATION_ERROR
         );
       }
       if (!translation || translation.trim() === '') {
+        const translationColumn = columns.length === 2 ? 2 : 3;
         throw new AppError(
-          `Line ${lineNumber}: Translation column is required and cannot be empty`,
+          `Line ${lineNumber}: Translation column (column ${translationColumn}) is required and cannot be empty`,
           ERROR_CODES.VALIDATION_ERROR
         );
       }
@@ -176,13 +193,15 @@ export class TSVParser {
    * Get sample TSV format
    */
   static getSampleFormat(): string {
-    return [
-      'hello\tこんにちは',
-      'goodbye\tさようなら',
-      'thank you\tありがとう',
-      'apple\tりんご',
-      'water\t水',
-    ].join('\n');
+    return `Simple format (2 columns):
+hello\tこんにちは
+goodbye\tさようなら
+thank you\tありがとう
+
+Extended format (3+ columns):
+hello\thəˈloʊ\tこんにちは
+goodbye\tɡʊdˈbaɪ\tさようなら
+thank you\tθæŋk juː\tありがとう`;
   }
 
   /**
@@ -190,14 +209,21 @@ export class TSVParser {
    */
   static getFormatDescription(): string {
     return `TSV Format:
-Column 1: Word (required)
-Column 2: Translation (required)
-Column 3: Word pronunciation (optional)
-Column 4: Translation pronunciation (optional)
-Column 5: Memo (optional)
+
+Supported formats:
+1. Simple format (2 columns):
+   Column 1: Word (required)
+   Column 2: Translation (required)
+
+2. Extended format (3+ columns):
+   Column 1: Word (required)
+   Column 2: Word pronunciation (optional)
+   Column 3: Translation (required)
+   Column 4: Translation pronunciation (optional)
+   Column 5: Memo (optional)
 
 Each column should be separated by a tab character.
 Each row should be on a new line.
-Minimum 2 columns required (word and translation).`;
+Minimum 2 columns required.`;
   }
 }

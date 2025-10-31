@@ -7,10 +7,13 @@ import { getFlashcardRepository, getFolderRepository } from '../repositories';
 import { DatabaseManager } from '../database/DatabaseManager';
 import { AppError } from '../types/errors';
 import { ErrorService } from '../services/ErrorService';
+import { SearchService } from '../services/SearchService';
+import { SearchFilters, SortOption } from '../types/search';
 
 export function useAppActions(dispatch: Dispatch<AppAction>) {
   const flashcardRepo = getFlashcardRepository();
   const folderRepo = getFolderRepository();
+  const searchService = SearchService.getInstance();
 
   // Utility function to handle errors
   const handleError = async (error: any, operation: string, severity: 'low' | 'medium' | 'high' | 'critical' = 'medium') => {
@@ -118,12 +121,30 @@ export function useAppActions(dispatch: Dispatch<AppAction>) {
   };
 
   // Real-time search (doesn't update global state)
-  const searchFlashcardsRealTime = async (query: string): Promise<Flashcard[]> => {
+  const searchFlashcardsRealTime = async (query: string, filters?: Partial<SearchFilters>): Promise<Flashcard[]> => {
     try {
-      const results = await flashcardRepo.search(query);
-      return results;
+      // Create default filters if not provided
+      const defaultFilters: SearchFilters = {
+        sortBy: SortOption.RELEVANCE,
+        sortOrder: 'desc',
+        ...filters
+      };
+
+      const results = await searchService.search(query, defaultFilters);
+      return results.map(result => result.flashcard);
     } catch (error) {
       await handleError(error, 'real-time search flashcards', 'low');
+      return [];
+    }
+  };
+
+  // Enhanced search with full SearchResult objects
+  const searchFlashcardsEnhanced = async (query: string, filters: SearchFilters) => {
+    try {
+      const results = await searchService.search(query, filters);
+      return results;
+    } catch (error) {
+      await handleError(error, 'enhanced search flashcards', 'low');
       return [];
     }
   };
@@ -261,6 +282,7 @@ export function useAppActions(dispatch: Dispatch<AppAction>) {
     deleteFlashcard,
     searchFlashcards,
     searchFlashcardsRealTime,
+    searchFlashcardsEnhanced,
     loadFolders,
     createFolder,
     updateFolder,

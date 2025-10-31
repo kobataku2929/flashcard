@@ -3,18 +3,15 @@
 import { 
   SearchFilters, 
   SearchResult, 
-  SearchHistoryItem, 
-  SearchError, 
   SearchErrorType,
   SortOption,
-  StudyStatus,
-  HighlightedContent
+  HighlightedContent,
+  AutocompleteSuggestion
 } from '../types/search';
 import { Flashcard } from '../types';
 import { getFlashcardRepository, getSearchRepository } from '../repositories';
 import { SearchHistoryService } from './SearchHistoryService';
 import { FilterService } from './FilterService';
-import { SearchPerformanceMonitor } from './SearchPerformanceMonitor';
 import { SearchAnalyticsService } from './SearchAnalyticsService';
 
 export class SearchService {
@@ -23,10 +20,8 @@ export class SearchService {
   private searchRepo = getSearchRepository();
   private historyService = SearchHistoryService.getInstance();
   private filterService = FilterService.getInstance();
-  private performanceMonitor = SearchPerformanceMonitor.getInstance();
   private analyticsService = SearchAnalyticsService.getInstance();
   private searchCache = new Map<string, SearchResult[]>();
-  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
   private readonly MIN_QUERY_LENGTH = 1;
   private readonly MAX_RESULTS = 1000;
 
@@ -59,14 +54,6 @@ export class SearchService {
       const cacheKey = this.generateCacheKey(query, filters);
       const cachedResults = this.getCachedResults(cacheKey);
       if (cachedResults) {
-        // Record cache hit
-        this.performanceMonitor.recordSearch({
-          queryTime: 0,
-          resultCount: cachedResults.length,
-          cacheHit: true,
-          query,
-          timestamp: new Date()
-        });
         return cachedResults;
       }
 
@@ -95,14 +82,10 @@ export class SearchService {
       // Cache results
       this.cacheResults(cacheKey, limitedResults);
 
-      // Record performance metrics
-      this.performanceMonitor.recordSearch({
-        queryTime: searchTime,
-        resultCount: limitedResults.length,
-        cacheHit: false,
-        query,
-        timestamp: new Date()
-      });
+      // Log performance metrics
+      if (searchTime > 1000) {
+        console.warn(`Slow search query: "${query}" took ${searchTime}ms`);
+      }
 
       // Save to history
       await this.historyService.addToHistory({
@@ -119,7 +102,7 @@ export class SearchService {
       return limitedResults;
 
     } catch (error) {
-      if (error instanceof SearchError) {
+      if (error && typeof error === 'object' && 'type' in error) {
         throw error;
       }
       
@@ -163,6 +146,80 @@ export class SearchService {
   }
 
   /**
+   * Get enhanced autocomplete suggestions with metadata
+   */
+  public async getAutocompleteSuggestions(partial: string): Promise<AutocompleteSuggestion[]> {
+    try {
+      if (partial.length < 1) {
+        // Return recent searches when no input
+        const recentSearches = await this.historyService.getHistory(5);
+        return recentSearches.map(item => ({
+          id: `history_${item.id}`,
+          text: item.query,
+          type: 'history' as const,
+          frequency: 1,
+          lastUsed: item.timestamp,
+          resultCount: item.resultCount
+        }));
+      }
+
+      const suggestions: AutocompleteSuggestion[] = [];
+      const seenTexts = new Set<string>();
+
+      // Get content-based suggestions with enhanced metadata
+      const contentSuggestions = await this.getEnhancedContentSuggestions(partial, 6);
+      contentSuggestions.forEach(suggestion => {
+        if (!seenTexts.has(suggestion.text.toLowerCase())) {
+          suggestions.push(suggestion);
+          seenTexts.add(suggestion.text.toLowerCase());
+        }
+      });
+
+      // Get history-based suggestions
+      const historySuggestions = await this.historyService.getHistoryBasedSuggestions(partial, 4);
+      historySuggestions.forEach(query => {
+        if (!seenTexts.has(query.toLowerCase())) {
+          suggestions.push({
+            id: `history_${Date.now()}_${Math.random()}`,
+            text: query,
+            type: 'history',
+            frequency: 1,
+            lastUsed: new Date()
+          });
+          seenTexts.add(query.toLowerCase());
+        }
+      });
+
+      // Sort by relevance and frequency
+      return this.rankSuggestions(suggestions, partial).slice(0, 8);
+
+    } catch (error) {
+      console.error('Failed to get autocomplete suggestions:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get frequent search terms for quick access
+   */
+  public async getFrequentSearchTerms(limit: number = 5): Promise<AutocompleteSuggestion[]> {
+    try {
+      const frequentSearches = await this.historyService.getFrequentSearches(limit);
+      return frequentSearches.map(item => ({
+        id: `frequent_${item.id}`,
+        text: item.query,
+        type: 'history' as const,
+        frequency: 1, // TODO: Get actual frequency from analytics
+        lastUsed: item.timestamp,
+        resultCount: item.resultCount
+      }));
+    } catch (error) {
+      console.error('Failed to get frequent search terms:', error);
+      return [];
+    }
+  }
+
+  /**
    * Clear search cache
    */
   public clearCache(): void {
@@ -180,64 +237,99 @@ export class SearchService {
     };
   }
 
-  private async performDatabaseSearch(query: string, filters: SearchFilters): Promise<Flashcard[]> {
-    // Use existing search method from repository as base
-    let flashcards = await this.flashcardRepo.search(query);
 
-    // Apply folder filter if specified
-    if (filters.folderId !== undefined) {
-      flashcards = flashcards.filter(card => card.folderId === filters.folderId);
-    }
-
-    // Apply date range filter if specified
-    if (filters.dateRange) {
-      flashcards = flashcards.filter(card => {
-        const cardDate = new Date(card.createdAt);
-        return cardDate >= filters.dateRange!.startDate && cardDate <= filters.dateRange!.endDate;
-      });
-    }
-
-    return flashcards;
-  }
 
   private async convertToSearchResults(flashcards: Flashcard[], query: string): Promise<SearchResult[]> {
-    return flashcards.map(flashcard => ({
-      flashcard,
-      relevanceScore: this.calculateRelevanceScore(flashcard, query),
-      matchedFields: this.getMatchedFields(flashcard, query),
-      highlightedContent: this.createHighlightedContent(flashcard, query)
-    }));
+    const lowerQuery = query.toLowerCase();
+    
+    return flashcards
+      .map(flashcard => {
+        const relevanceScore = this.calculateRelevanceScore(flashcard, query);
+        const matchedFields = this.getMatchedFields(flashcard, query);
+        
+        return {
+          flashcard,
+          relevanceScore,
+          matchedFields,
+          highlightedContent: this.createHighlightedContent(flashcard, query)
+        };
+      })
+      .filter(result => {
+        // 検索ワードが含まれているカードのみを返す - より厳密なチェック
+        if (result.relevanceScore <= 0 || result.matchedFields.length === 0) {
+          return false;
+        }
+        
+        // 実際にクエリが含まれているかダブルチェック
+        const { flashcard } = result;
+        return (
+          flashcard.word.toLowerCase().includes(lowerQuery) ||
+          flashcard.translation.toLowerCase().includes(lowerQuery) ||
+          (flashcard.memo && flashcard.memo.toLowerCase().includes(lowerQuery)) ||
+          (flashcard.wordPronunciation && flashcard.wordPronunciation.toLowerCase().includes(lowerQuery)) ||
+          (flashcard.translationPronunciation && flashcard.translationPronunciation.toLowerCase().includes(lowerQuery))
+        );
+      });
   }
 
   private calculateRelevanceScore(flashcard: Flashcard, query: string): number {
     const lowerQuery = query.toLowerCase();
     let score = 0;
+    let matchType = '';
 
-    // Exact word match gets highest score
+    // 優先順位: 表面のメイン（単語）> 裏面のメイン（翻訳）> メモ
+    
+    // 表面のメイン（単語）- 最高優先度
     if (flashcard.word.toLowerCase() === lowerQuery) {
-      score += 100;
+      score += 100000; // 完全一致
+      matchType = 'word-exact';
+    } else if (flashcard.word.toLowerCase().startsWith(lowerQuery)) {
+      score += 80000; // 前方一致
+      matchType = 'word-starts';
     } else if (flashcard.word.toLowerCase().includes(lowerQuery)) {
-      score += 50;
+      score += 60000; // 部分一致
+      matchType = 'word-contains';
     }
 
-    // Translation match
+    // 裏面のメイン（翻訳）- 2番目の優先度
     if (flashcard.translation.toLowerCase() === lowerQuery) {
-      score += 80;
+      score += 50000; // 完全一致
+      if (!matchType) matchType = 'translation-exact';
+    } else if (flashcard.translation.toLowerCase().startsWith(lowerQuery)) {
+      score += 40000; // 前方一致
+      if (!matchType) matchType = 'translation-starts';
     } else if (flashcard.translation.toLowerCase().includes(lowerQuery)) {
-      score += 40;
+      score += 30000; // 部分一致
+      if (!matchType) matchType = 'translation-contains';
     }
 
-    // Memo match (lower priority)
+    // メモ（3番目の優先度 - 最低）
     if (flashcard.memo && flashcard.memo.toLowerCase().includes(lowerQuery)) {
-      score += 20;
+      if (flashcard.memo.toLowerCase() === lowerQuery) {
+        score += 20000; // 完全一致
+        if (!matchType) matchType = 'memo-exact';
+      } else if (flashcard.memo.toLowerCase().startsWith(lowerQuery)) {
+        score += 15000; // 前方一致
+        if (!matchType) matchType = 'memo-starts';
+      } else {
+        score += 10000; // 部分一致
+        if (!matchType) matchType = 'memo-contains';
+      }
     }
 
-    // Pronunciation matches
+    // 発音（最低優先度）
     if (flashcard.wordPronunciation && flashcard.wordPronunciation.toLowerCase().includes(lowerQuery)) {
-      score += 30;
+      score += 5000;
+      if (!matchType) matchType = 'word-pronunciation';
     }
     if (flashcard.translationPronunciation && flashcard.translationPronunciation.toLowerCase().includes(lowerQuery)) {
-      score += 25;
+      score += 2500;
+      if (!matchType) matchType = 'translation-pronunciation';
+    }
+
+    // デバッグログ（開発時のみ）
+    if (score > 0) {
+      console.log(`[SearchService] Card: "${flashcard.word}" -> "${flashcard.translation}", Score: ${score}, Match: ${matchType}, Query: "${query}"`);
     }
 
     return score;
@@ -285,10 +377,22 @@ export class SearchService {
     const sortedResults = [...results];
     const multiplier = sortOrder === 'asc' ? 1 : -1;
 
+    // デバッグログ（ソート前）
+    console.log(`[SearchService] Sorting ${results.length} results by ${sortBy}, order: ${sortOrder}`);
+    results.forEach((result, index) => {
+      console.log(`[SearchService] Before sort [${index}]: "${result.flashcard.word}" -> "${result.flashcard.translation}", Score: ${result.relevanceScore}`);
+    });
+
     sortedResults.sort((a, b) => {
       switch (sortBy) {
         case SortOption.RELEVANCE:
-          return (b.relevanceScore - a.relevanceScore) * multiplier;
+          // 関連性スコアで並び替え（高い方が先）
+          const scoreDiff = b.relevanceScore - a.relevanceScore;
+          if (scoreDiff !== 0) {
+            return scoreDiff * multiplier;
+          }
+          // スコアが同じ場合は作成日で並び替え
+          return (new Date(b.flashcard.createdAt).getTime() - new Date(a.flashcard.createdAt).getTime()) * multiplier;
         
         case SortOption.DATE_CREATED:
           return (new Date(b.flashcard.createdAt).getTime() - new Date(a.flashcard.createdAt).getTime()) * multiplier;
@@ -305,8 +409,18 @@ export class SearchService {
           return 0;
         
         default:
-          return (b.relevanceScore - a.relevanceScore) * multiplier;
+          // デフォルトは関連性順
+          const defaultScoreDiff = b.relevanceScore - a.relevanceScore;
+          if (defaultScoreDiff !== 0) {
+            return defaultScoreDiff;
+          }
+          return (new Date(b.flashcard.createdAt).getTime() - new Date(a.flashcard.createdAt).getTime());
       }
+    });
+
+    // デバッグログ（ソート後）
+    sortedResults.forEach((result, index) => {
+      console.log(`[SearchService] After sort [${index}]: "${result.flashcard.word}" -> "${result.flashcard.translation}", Score: ${result.relevanceScore}`);
     });
 
     return sortedResults;
@@ -330,12 +444,131 @@ export class SearchService {
     // Clean up old cache entries
     if (this.searchCache.size > 100) {
       const firstKey = this.searchCache.keys().next().value;
-      this.searchCache.delete(firstKey);
+      if (firstKey) {
+        this.searchCache.delete(firstKey);
+      }
     }
   }
 
   private generateHistoryId(): string {
-    return `search_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return `search_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+  }
+
+  /**
+   * Get enhanced content suggestions with metadata
+   */
+  private async getEnhancedContentSuggestions(partial: string, limit: number): Promise<AutocompleteSuggestion[]> {
+    try {
+      const db = await this.searchRepo.getDb();
+      const searchTerm = `${partial.toLowerCase()}%`;
+      
+      const sql = `
+        SELECT 
+          word, translation, memo, word_pronunciation, translation_pronunciation,
+          created_at,
+          CASE 
+            WHEN LOWER(word) LIKE ? THEN 'word'
+            WHEN LOWER(translation) LIKE ? THEN 'translation'
+            WHEN LOWER(memo) LIKE ? AND memo IS NOT NULL THEN 'memo'
+            WHEN LOWER(word_pronunciation) LIKE ? AND word_pronunciation IS NOT NULL THEN 'pronunciation'
+            WHEN LOWER(translation_pronunciation) LIKE ? AND translation_pronunciation IS NOT NULL THEN 'pronunciation'
+            ELSE 'other'
+          END as match_type,
+          CASE 
+            WHEN LOWER(word) LIKE ? THEN word
+            WHEN LOWER(translation) LIKE ? THEN translation
+            WHEN LOWER(memo) LIKE ? AND memo IS NOT NULL THEN memo
+            WHEN LOWER(word_pronunciation) LIKE ? AND word_pronunciation IS NOT NULL THEN word_pronunciation
+            WHEN LOWER(translation_pronunciation) LIKE ? AND translation_pronunciation IS NOT NULL THEN translation_pronunciation
+            ELSE NULL
+          END as suggestion_text
+        FROM flashcards 
+        WHERE suggestion_text IS NOT NULL
+        ORDER BY 
+          CASE match_type
+            WHEN 'word' THEN 1
+            WHEN 'translation' THEN 2
+            WHEN 'pronunciation' THEN 3
+            WHEN 'memo' THEN 4
+            ELSE 5
+          END,
+          LENGTH(suggestion_text), 
+          created_at DESC
+        LIMIT ?
+      `;
+
+      const params = Array(11).fill(searchTerm).concat([limit]);
+      const rows = await db.getAllAsync(sql, params);
+      
+      return rows.map((row: any, index: number) => ({
+        id: `content_${index}_${Date.now()}`,
+        text: row.suggestion_text,
+        type: row.match_type === 'word' ? 'word' as const :
+              row.match_type === 'translation' ? 'translation' as const :
+              row.match_type === 'memo' ? 'memo' as const :
+              'word' as const,
+        frequency: 1,
+        lastUsed: new Date(row.created_at),
+        flashcard: {
+          word: row.word,
+          translation: row.translation,
+          memo: row.memo
+        }
+      }));
+
+    } catch (error) {
+      console.error('Failed to get enhanced content suggestions:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Rank suggestions by relevance and frequency
+   */
+  private rankSuggestions(suggestions: AutocompleteSuggestion[], partial: string): AutocompleteSuggestion[] {
+    const lowerPartial = partial.toLowerCase();
+    
+    return suggestions.sort((a, b) => {
+      const aText = a.text.toLowerCase();
+      const bText = b.text.toLowerCase();
+      
+      // Exact match gets highest priority
+      const aExact = aText === lowerPartial ? 100 : 0;
+      const bExact = bText === lowerPartial ? 100 : 0;
+      if (aExact !== bExact) return bExact - aExact;
+      
+      // Starts with gets second priority
+      const aStartsWith = aText.startsWith(lowerPartial) ? 50 : 0;
+      const bStartsWith = bText.startsWith(lowerPartial) ? 50 : 0;
+      if (aStartsWith !== bStartsWith) return bStartsWith - aStartsWith;
+      
+      // Type priority (word > translation > history > memo)
+      const typeScore = (type: string) => {
+        switch (type) {
+          case 'word': return 40;
+          case 'translation': return 30;
+          case 'history': return 20;
+          case 'memo': return 10;
+          default: return 0;
+        }
+      };
+      const aTypeScore = typeScore(a.type);
+      const bTypeScore = typeScore(b.type);
+      if (aTypeScore !== bTypeScore) return bTypeScore - aTypeScore;
+      
+      // Frequency and recency
+      const aFrequency = (a.frequency || 1) * 10;
+      const bFrequency = (b.frequency || 1) * 10;
+      if (aFrequency !== bFrequency) return bFrequency - aFrequency;
+      
+      // Recency (more recent = higher score)
+      const aRecency = a.lastUsed ? Date.now() - a.lastUsed.getTime() : Infinity;
+      const bRecency = b.lastUsed ? Date.now() - b.lastUsed.getTime() : Infinity;
+      if (aRecency !== bRecency) return aRecency - bRecency;
+      
+      // Length (shorter = better)
+      return aText.length - bText.length;
+    });
   }
 
   private createSearchError(
@@ -344,8 +577,13 @@ export class SearchService {
     query?: string,
     filters?: SearchFilters,
     suggestions?: string[]
-  ): SearchError {
-    const error = new Error(message) as SearchError;
+  ): Error & { type: SearchErrorType; query?: string; filters?: SearchFilters; suggestions?: string[] } {
+    const error = new Error(message) as Error & { 
+      type: SearchErrorType; 
+      query?: string; 
+      filters?: SearchFilters; 
+      suggestions?: string[] 
+    };
     error.type = type;
     error.query = query;
     error.filters = filters;

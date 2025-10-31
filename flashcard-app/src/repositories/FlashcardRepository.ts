@@ -124,6 +124,67 @@ export class FlashcardRepositoryImpl implements FlashcardRepository {
     }, { count: flashcards.length });
   }
 
+  /**
+   * Create multiple flashcards and return the created flashcards
+   */
+  async createMany(flashcards: CreateFlashcard[]): Promise<Flashcard[]> {
+    return performanceMonitor.measureAsync('FlashcardRepository.createMany', async () => {
+      try {
+        const db = await this.getDb();
+        const createdFlashcards: Flashcard[] = [];
+
+        // Use transaction for better performance and consistency
+        await db.execAsync('BEGIN TRANSACTION');
+
+        try {
+          for (const flashcard of flashcards) {
+            validateRequiredFields(flashcard, ['word', 'translation']);
+
+            const result = await db.runAsync(
+              `INSERT INTO flashcards (word, word_pronunciation, translation, translation_pronunciation, memo, folder_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+              [
+                flashcard.word,
+                flashcard.wordPronunciation || null,
+                flashcard.translation,
+                flashcard.translationPronunciation || null,
+                flashcard.memo || null,
+                flashcard.folderId || null,
+              ]
+            );
+
+            if (!result.lastInsertRowId) {
+              throw new AppError('Failed to create flashcard', ERROR_CODES.DATABASE_ERROR);
+            }
+
+            // Get the created flashcard
+            const row = await db.getFirstAsync(
+              'SELECT * FROM flashcards WHERE id = ?',
+              [result.lastInsertRowId]
+            );
+
+            if (row) {
+              const newFlashcard = this.mapRowToFlashcard(row);
+              createdFlashcards.push(newFlashcard);
+              this.setCache(newFlashcard);
+            }
+          }
+
+          await db.execAsync('COMMIT');
+          return createdFlashcards;
+
+        } catch (error) {
+          await db.execAsync('ROLLBACK');
+          throw error;
+        }
+
+      } catch (error) {
+        if (error instanceof AppError) throw error;
+        throw handleDatabaseError(error, 'create multiple flashcards');
+      }
+    }, { count: flashcards.length });
+  }
+
   async findById(id: number): Promise<Flashcard | null> {
     return performanceMonitor.measureAsync('FlashcardRepository.findById', async () => {
       try {
@@ -272,26 +333,25 @@ export class FlashcardRepositoryImpl implements FlashcardRepository {
       const exactTerm = query.toLowerCase();
       const startsWithTerm = `${query.toLowerCase()}%`;
 
-      // Enhanced search with strict relevance scoring
+      // Enhanced search with additive relevance scoring
       const rows = await db.getAllAsync(
         `SELECT *, 
-          CASE 
+          (
             -- Exact matches get highest priority
-            WHEN LOWER(word) = ? THEN 1000
-            WHEN LOWER(translation) = ? THEN 950
+            (CASE WHEN LOWER(word) = ? THEN 1000 ELSE 0 END) +
+            (CASE WHEN LOWER(translation) = ? THEN 950 ELSE 0 END) +
             -- Starts with query gets high priority
-            WHEN LOWER(word) LIKE ? THEN 800
-            WHEN LOWER(translation) LIKE ? THEN 750
+            (CASE WHEN LOWER(word) LIKE ? AND LOWER(word) != ? THEN 800 ELSE 0 END) +
+            (CASE WHEN LOWER(translation) LIKE ? AND LOWER(translation) != ? THEN 750 ELSE 0 END) +
             -- Contains query in word/translation
-            WHEN LOWER(word) LIKE ? THEN 600
-            WHEN LOWER(translation) LIKE ? THEN 550
+            (CASE WHEN LOWER(word) LIKE ? AND LOWER(word) NOT LIKE ? THEN 600 ELSE 0 END) +
+            (CASE WHEN LOWER(translation) LIKE ? AND LOWER(translation) NOT LIKE ? THEN 550 ELSE 0 END) +
             -- Pronunciation matches
-            WHEN LOWER(word_pronunciation) LIKE ? THEN 400
-            WHEN LOWER(translation_pronunciation) LIKE ? THEN 350
+            (CASE WHEN LOWER(word_pronunciation) LIKE ? THEN 400 ELSE 0 END) +
+            (CASE WHEN LOWER(translation_pronunciation) LIKE ? THEN 350 ELSE 0 END) +
             -- Memo matches (lowest priority)
-            WHEN LOWER(memo) LIKE ? THEN 200
-            ELSE 0
-          END as relevance_score
+            (CASE WHEN LOWER(memo) LIKE ? THEN 200 ELSE 0 END)
+          ) as relevance_score
          FROM flashcards 
          WHERE (
            LOWER(word) LIKE ? 
@@ -303,10 +363,12 @@ export class FlashcardRepositoryImpl implements FlashcardRepository {
          AND relevance_score > 0
          ORDER BY relevance_score DESC, LENGTH(word) ASC, created_at DESC`,
         [
-          // Scoring parameters
+          // Scoring parameters (in order of CASE statements)
           exactTerm, exactTerm, // Exact matches
-          startsWithTerm, startsWithTerm, // Starts with
-          searchTerm, searchTerm, // Contains in word/translation
+          startsWithTerm, exactTerm, // Word starts with (exclude exact)
+          startsWithTerm, exactTerm, // Translation starts with (exclude exact)
+          searchTerm, startsWithTerm, // Word contains (exclude starts with)
+          searchTerm, startsWithTerm, // Translation contains (exclude starts with)
           searchTerm, searchTerm, // Pronunciation contains
           searchTerm, // Memo contains
           // WHERE clause parameters

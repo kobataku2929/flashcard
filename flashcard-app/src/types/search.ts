@@ -106,3 +106,17 @@ export interface SearchError extends Error {
   filters?: SearchFilters;
   suggestions?: string[];
 }
+
+export interface AutocompleteSuggestion {
+  id: string;
+  text: string;
+  type: 'word' | 'translation' | 'memo' | 'history' | 'pronunciation';
+  frequency?: number;
+  lastUsed?: Date;
+  resultCount?: number;
+  flashcard?: {
+    word: string;
+    translation: string;
+    memo?: string;
+  };
+}

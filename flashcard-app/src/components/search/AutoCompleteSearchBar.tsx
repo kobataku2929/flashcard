@@ -12,25 +12,19 @@ import {
   Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Flashcard } from '../../types';
-
-export interface SearchSuggestion {
-  id: string;
-  text: string;
-  type: 'word' | 'translation' | 'memo' | 'history';
-  flashcard?: Flashcard;
-}
+import { AutocompleteSuggestion } from '../../types/search';
 
 interface AutoCompleteSearchBarProps {
   placeholder?: string;
   value: string;
   onChangeText: (text: string) => void;
   onSearch: (query: string) => void;
-  onSuggestionSelect: (suggestion: SearchSuggestion) => void;
-  getSuggestions: (query: string) => Promise<SearchSuggestion[]>;
+  onSuggestionSelect: (suggestion: AutocompleteSuggestion) => void;
+  getSuggestions: (query: string) => Promise<AutocompleteSuggestion[]>;
   style?: any;
   autoFocus?: boolean;
   maxSuggestions?: number;
+  showFrequentSearches?: boolean;
 }
 
 export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
@@ -43,13 +37,32 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
   style,
   autoFocus = false,
   maxSuggestions = 8,
+  showFrequentSearches = true,
 }) => {
-  const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
+  const [suggestions, setSuggestions] = useState<AutocompleteSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [frequentSearches, setFrequentSearches] = useState<AutocompleteSuggestion[]>([]);
   const inputRef = useRef<TextInput>(null);
   const suggestionHeight = useRef(new Animated.Value(0)).current;
   const debounceRef = useRef<NodeJS.Timeout>();
+
+  // Load frequent searches on mount
+  useEffect(() => {
+    if (showFrequentSearches) {
+      loadFrequentSearches();
+    }
+  }, [showFrequentSearches]);
+
+  // Load frequent searches
+  const loadFrequentSearches = async () => {
+    try {
+      const frequent = await getSuggestions(''); // Empty query returns frequent searches
+      setFrequentSearches(frequent.slice(0, 5));
+    } catch (error) {
+      console.error('Failed to load frequent searches:', error);
+    }
+  };
 
   useEffect(() => {
     // Debounced suggestion fetching
@@ -67,7 +80,7 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
           
           // Animate suggestions appearance
           Animated.timing(suggestionHeight, {
-            toValue: newSuggestions.length > 0 ? Math.min(newSuggestions.length * 50, 300) : 0,
+            toValue: newSuggestions.length > 0 ? Math.min(newSuggestions.length * 56, 300) : 0,
             duration: 200,
             useNativeDriver: false,
           }).start();
@@ -78,7 +91,16 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
         } finally {
           setLoading(false);
         }
-      }, 300); // 300ms debounce
+      }, 200); // Reduced debounce for better responsiveness
+    } else if (showFrequentSearches && frequentSearches.length > 0) {
+      // Show frequent searches when input is empty
+      setSuggestions(frequentSearches);
+      setShowSuggestions(true);
+      Animated.timing(suggestionHeight, {
+        toValue: Math.min(frequentSearches.length * 56, 300),
+        duration: 200,
+        useNativeDriver: false,
+      }).start();
     } else {
       setSuggestions([]);
       setShowSuggestions(false);
@@ -94,13 +116,13 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
         clearTimeout(debounceRef.current);
       }
     };
-  }, [value, getSuggestions, maxSuggestions, suggestionHeight]);
+  }, [value, getSuggestions, maxSuggestions, suggestionHeight, showFrequentSearches, frequentSearches]);
 
   const handleTextChange = (text: string) => {
     onChangeText(text);
   };
 
-  const handleSuggestionPress = (suggestion: SearchSuggestion) => {
+  const handleSuggestionPress = (suggestion: AutocompleteSuggestion) => {
     onChangeText(suggestion.text);
     onSuggestionSelect(suggestion);
     setShowSuggestions(false);
@@ -143,7 +165,7 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
     }).start();
   };
 
-  const getSuggestionIcon = (type: SearchSuggestion['type']) => {
+  const getSuggestionIcon = (type: AutocompleteSuggestion['type']) => {
     switch (type) {
       case 'word':
         return 'text-outline';
@@ -153,12 +175,14 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
         return 'document-text-outline';
       case 'history':
         return 'time-outline';
+      case 'pronunciation':
+        return 'volume-medium-outline';
       default:
         return 'search-outline';
     }
   };
 
-  const getSuggestionTypeLabel = (type: SearchSuggestion['type']) => {
+  const getSuggestionTypeLabel = (type: AutocompleteSuggestion['type']) => {
     switch (type) {
       case 'word':
         return '単語';
@@ -168,12 +192,29 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
         return 'メモ';
       case 'history':
         return '履歴';
+      case 'pronunciation':
+        return '発音';
       default:
         return '';
     }
   };
 
-  const renderSuggestion = ({ item }: { item: SearchSuggestion }) => (
+  const getSuggestionSubtext = (suggestion: AutocompleteSuggestion) => {
+    if (suggestion.type === 'history' && suggestion.resultCount !== undefined) {
+      return `${suggestion.resultCount}件の結果`;
+    }
+    if (suggestion.flashcard) {
+      if (suggestion.type === 'word') {
+        return suggestion.flashcard.translation;
+      }
+      if (suggestion.type === 'translation') {
+        return suggestion.flashcard.word;
+      }
+    }
+    return getSuggestionTypeLabel(suggestion.type);
+  };
+
+  const renderSuggestion = ({ item }: { item: AutocompleteSuggestion }) => (
     <TouchableOpacity
       style={styles.suggestionItem}
       onPress={() => handleSuggestionPress(item)}
@@ -183,19 +224,26 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
         <Ionicons
           name={getSuggestionIcon(item.type) as any}
           size={20}
-          color="#6b7280"
+          color={item.type === 'history' ? '#8b5cf6' : '#6b7280'}
           style={styles.suggestionIcon}
         />
         <View style={styles.suggestionTextContainer}>
           <Text style={styles.suggestionText} numberOfLines={1}>
             {item.text}
           </Text>
-          <Text style={styles.suggestionType}>
-            {getSuggestionTypeLabel(item.type)}
+          <Text style={styles.suggestionType} numberOfLines={1}>
+            {getSuggestionSubtext(item)}
           </Text>
         </View>
       </View>
-      <Ionicons name="arrow-up-outline" size={16} color="#9ca3af" />
+      <View style={styles.suggestionActions}>
+        {item.frequency && item.frequency > 1 && (
+          <View style={styles.frequencyBadge}>
+            <Text style={styles.frequencyText}>{item.frequency}</Text>
+          </View>
+        )}
+        <Ionicons name="arrow-up-outline" size={16} color="#9ca3af" />
+      </View>
     </TouchableOpacity>
   );
 
@@ -237,6 +285,11 @@ export const AutoCompleteSearchBar: React.FC<AutoCompleteSearchBarProps> = ({
             },
           ]}
         >
+          {value.trim().length === 0 && showFrequentSearches && (
+            <View style={styles.suggestionHeader}>
+              <Text style={styles.suggestionHeaderText}>最近の検索</Text>
+            </View>
+          )}
           <FlatList
             data={suggestions}
             renderItem={renderSuggestion}
@@ -343,5 +396,35 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#6b7280',
     marginTop: 2,
+  },
+  suggestionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  frequencyBadge: {
+    backgroundColor: '#e0e7ff',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginRight: 8,
+  },
+  frequencyText: {
+    fontSize: 10,
+    color: '#6366f1',
+    fontWeight: '600',
+  },
+  suggestionHeader: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+    backgroundColor: '#f9fafb',
+  },
+  suggestionHeaderText: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
 });

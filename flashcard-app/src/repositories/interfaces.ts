@@ -4,6 +4,7 @@ import { Flashcard, Folder, CreateFlashcard, CreateFolder, UpdateFlashcard, Upda
 
 export interface FlashcardRepository {
   create(flashcard: CreateFlashcard): Promise<Flashcard>;
+  createMany(flashcards: CreateFlashcard[]): Promise<Flashcard[]>;
   findById(id: number): Promise<Flashcard | null>;
   findByFolderId(folderId: number | null): Promise<Flashcard[]>;
   update(id: number, flashcard: UpdateFlashcard): Promise<Flashcard>;
