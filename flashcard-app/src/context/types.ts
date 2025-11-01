@@ -15,7 +15,7 @@ export interface AppContextType {
   state: AppState;
   actions: {
     // Flashcard actions
-    loadFlashcards: () => Promise<void>;
+    loadFlashcards: (showLoading?: boolean) => Promise<void>;
     loadFlashcard: (id: number) => Promise<Flashcard>;
     createFlashcard: (flashcard: CreateFlashcard) => Promise<void>;
     updateFlashcard: (id: number, flashcard: UpdateFlashcard) => Promise<void>;
@@ -23,7 +23,7 @@ export interface AppContextType {
     searchFlashcards: (query: string) => Promise<Flashcard[]>;
     
     // Folder actions
-    loadFolders: () => Promise<void>;
+    loadFolders: (showLoading?: boolean) => Promise<void>;
     createFolder: (folder: CreateFolder) => Promise<void>;
     updateFolder: (id: number, folder: UpdateFolder) => Promise<void>;
     deleteFolder: (id: number) => Promise<void>;
@@ -55,4 +55,5 @@ export type AppAction =
   | { type: 'REMOVE_FOLDER'; payload: number }
   | { type: 'SET_CURRENT_FOLDER'; payload: Folder | undefined }
   | { type: 'SET_INITIALIZED'; payload: boolean }
+  | { type: 'SET_INITIAL_DATA'; payload: { flashcards: Flashcard[]; folders: Folder[] } }
   | { type: 'RESET_ALL_DATA' };

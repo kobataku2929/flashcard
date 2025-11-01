@@ -19,12 +19,12 @@ export function AppProvider({ children }: AppProviderProps) {
 
   // Initialize app when provider mounts
   React.useEffect(() => {
-    if (!state.isInitialized) {
+    if (!state.isInitialized && !state.loading) {
       measure('initializeApp', () => {
         actions.initializeApp();
       });
     }
-  }, [state.isInitialized, actions, measure]);
+  }, [state.isInitialized, state.loading, actions, measure]);
 
   // Memoize context value to prevent unnecessary re-renders
   const contextValue: AppContextType = useMemo(() => ({

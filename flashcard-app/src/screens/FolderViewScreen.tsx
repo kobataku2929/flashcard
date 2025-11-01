@@ -41,19 +41,22 @@ export default function FolderViewScreen({ route, navigation }: Props) {
     });
   }, [currentFolder, navigation]);
 
-  // Load folder data when screen focuses
+  // Load folder data when screen focuses (only if not already initialized)
   useFocusEffect(
     useCallback(() => {
-      loadFolderData();
-    }, [folderId])
+      if (state.isInitialized) {
+        // Only refresh data if already initialized, without showing loading
+        loadFolderData(false);
+      }
+    }, [folderId, state.isInitialized])
   );
 
-  const loadFolderData = async () => {
+  const loadFolderData = async (showLoading: boolean = true) => {
     try {
       // Load folders and flashcards for current folder
       await Promise.all([
-        actions.loadFolders(),
-        actions.loadFlashcards(),
+        actions.loadFolders(showLoading),
+        actions.loadFlashcards(showLoading),
       ]);
     } catch (error) {
       console.error('Failed to load folder data:', error);
@@ -63,7 +66,7 @@ export default function FolderViewScreen({ route, navigation }: Props) {
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await loadFolderData();
+    await loadFolderData(false); // Don't show loading spinner during pull-to-refresh
     setRefreshing(false);
   };
 

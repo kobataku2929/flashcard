@@ -106,6 +106,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         isInitialized: action.payload,
       };
 
+    case 'SET_INITIAL_DATA':
+      return {
+        ...state,
+        flashcards: action.payload.flashcards,
+        folders: action.payload.folders,
+        loading: false,
+        error: undefined,
+      };
+
     case 'RESET_ALL_DATA':
       return {
         ...initialState,

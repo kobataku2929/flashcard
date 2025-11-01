@@ -40,12 +40,14 @@ export function useAppActions(dispatch: Dispatch<AppAction>) {
       // Initialize database
       await DatabaseManager.getInstance().initialize();
       
-      // Load initial data
-      await Promise.all([
-        loadFlashcards(),
-        loadFolders(),
+      // Load initial data without individual loading states
+      const [flashcards, folders] = await Promise.all([
+        flashcardRepo.findAll(),
+        folderRepo.findAll(),
       ]);
       
+      // Set data and clear loading in one action
+      dispatch({ type: 'SET_INITIAL_DATA', payload: { flashcards, folders } });
       dispatch({ type: 'SET_INITIALIZED', payload: true });
     } catch (error) {
       await handleError(error, 'initialize app', 'critical');
@@ -53,9 +55,11 @@ export function useAppActions(dispatch: Dispatch<AppAction>) {
   };
 
   // Flashcard actions
-  const loadFlashcards = async () => {
+  const loadFlashcards = async (showLoading: boolean = true) => {
     try {
-      dispatch({ type: 'SET_LOADING', payload: true });
+      if (showLoading) {
+        dispatch({ type: 'SET_LOADING', payload: true });
+      }
       const flashcards = await flashcardRepo.findAll();
       dispatch({ type: 'SET_FLASHCARDS', payload: flashcards });
     } catch (error) {
@@ -150,9 +154,11 @@ export function useAppActions(dispatch: Dispatch<AppAction>) {
   };
 
   // Folder actions
-  const loadFolders = async () => {
+  const loadFolders = async (showLoading: boolean = true) => {
     try {
-      dispatch({ type: 'SET_LOADING', payload: true });
+      if (showLoading) {
+        dispatch({ type: 'SET_LOADING', payload: true });
+      }
       const folders = await folderRepo.findAll();
       dispatch({ type: 'SET_FOLDERS', payload: folders });
     } catch (error) {
