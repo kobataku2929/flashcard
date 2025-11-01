@@ -14,7 +14,10 @@
     },
     "ios": {
       "bundleIdentifier": "com.tiquitaku.flashcard",
-      "buildNumber": 1
+      "buildNumber": "1",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -26,6 +29,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "6452b32a-3c49-423f-ae9b-d24d088680b8"
+      }
     }
   }
 }
